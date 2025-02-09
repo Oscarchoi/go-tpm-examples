@@ -11,7 +11,7 @@ import (
 	"github.com/google/go-tpm/tpm2/transport"
 )
 
-func readPCR(rwc transport.TPM, pcrNum uint) ([]byte, error) {
+func readPCR(rwc transport.TPM, pcrNum uint) (tpm2.TPM2BDigest, error) {
 	pcrReadCmd := tpm2.PCRRead{
 		PCRSelectionIn: tpm2.TPMLPCRSelection{
 			PCRSelections: []tpm2.TPMSPCRSelection{
@@ -24,9 +24,9 @@ func readPCR(rwc transport.TPM, pcrNum uint) ([]byte, error) {
 	}
 	pcrReadRsp, err := pcrReadCmd.Execute(rwc)
 	if err != nil {
-		return nil, fmt.Errorf("Unable to read PCR: %w", err)
+		return tpm2.TPM2BDigest{}, fmt.Errorf("Unable to read PCR: %w", err)
 	}
-	return pcrReadRsp.PCRValues.Digests[0].Buffer, nil
+	return pcrReadRsp.PCRValues.Digests[0], nil
 }
 
 func getPersistentHandle(rwc transport.TPM, handle tpm2.TPMHandle) (tpm2.TPMHandle, error) {
@@ -62,6 +62,13 @@ func getPersistentKey(rwc transport.TPM, handle tpm2.TPMHandle, authKey []byte) 
 }
 
 func createPersistentKey(rwc transport.TPM, persistentHandle tpm2.TPMHandle, authKey []byte) (tpm2.TPMHandle, tpm2.TPM2BName, error) {
+
+	const pcrIndex = 7 // Secure Boot PCR
+	pcrDigest, err := readPCR(rwc, pcrIndex)
+	if err != nil {
+		return 0, tpm2.TPM2BName{}, fmt.Errorf("Failed to read PCR 7: %v", err)
+	}
+
 	primaryKeyTemplate := tpm2.TPMTPublic{
 		Type:    tpm2.TPMAlgRSA,
 		NameAlg: tpm2.TPMAlgSHA256,
@@ -74,6 +81,7 @@ func createPersistentKey(rwc transport.TPM, persistentHandle tpm2.TPMHandle, aut
 			Restricted:          true,
 			Decrypt:             true,
 		},
+		AuthPolicy: pcrDigest,
 		Parameters: tpm2.NewTPMUPublicParms(
 			tpm2.TPMAlgRSA,
 			&tpm2.TPMSRSAParms{
@@ -120,6 +128,7 @@ func createPersistentKey(rwc transport.TPM, persistentHandle tpm2.TPMHandle, aut
 }
 
 func ensurePersistentPrimaryKey(rwc transport.TPM, persistentHandle tpm2.TPMHandle, authKey []byte) (tpm2.TPMHandle, tpm2.TPM2BName, error) {
+
 	handle, err := getPersistentHandle(rwc, persistentHandle)
 	if err != nil {
 		fmt.Printf("Failed to retreive persistent handle: %v\n", err)
@@ -235,14 +244,6 @@ func main() {
 	}
 	defer rwc.Close()
 	log.Printf("[INFO] Successfully opened TPM.\n")
-
-	// 0. 특정 PCR 번호에서 값 읽기
-	pcrInfo, err := readPCR(rwc, 7)
-	if err != nil {
-		log.Printf("Failed to read PCR: %v\n", err)
-		return
-	}
-	log.Printf("[INFO] PCR 7 value: 0x%x\n", pcrInfo)
 
 	// 1. 기존 Persistent Handle 확인
 	primaryHandle, primaryName, err := ensurePersistentPrimaryKey(rwc, persistentHandle, auth)
